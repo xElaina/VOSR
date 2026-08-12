@@ -17,10 +17,16 @@ from tqdm import tqdm
 
 torch.hub.set_dir('preset/ckpts/torch_cache')
 sys.path.append(os.getcwd())
+# Make the VOSR/ dir (where tiled_vae.py lives) importable from any run cwd.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.lightningdit import LightningDiT
 from models.light_decoder import LightDecoder
 from vosr import VOSR
+from tiled_vae import (
+    encode_dispatch, decode_dispatch,
+    _gaussian_weights, _make_tile_grid,
+)
 
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -170,47 +176,6 @@ def get_venc_features(venc, lq_tensor, args):
     return z
 
 
-def _encode_latent(vae, x, args, device):
-    if args.ae_type == 'qwen':
-        latents_mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1).to(device)
-        latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, -1, 1, 1).to(device)
-        return (vae.encode(x).latent_dist.sample() - latents_mean) * latents_std, latents_mean, latents_std
-    elif args.ae_type == 'sd2':
-        return vae.encode(x).latent_dist.sample() * vae.config.scaling_factor, None, None
-
-
-def _decode_latent(vae, sr_latent, args, latents_mean, latents_std, light_decoder=None):
-    if args.ae_type == 'sd2':
-        sr_u = sr_latent / vae.config.scaling_factor
-        return light_decoder(sr_u).clamp(-1, 1)
-    elif args.ae_type == 'qwen':
-        sr_latent = sr_latent / latents_std + latents_mean
-        return vae.decode(sr_latent, return_dict=False)[0].clamp(-1, 1)
-
-
-def _gaussian_weights(tile_h, tile_w, channels, device):
-    """2-D Gaussian blend mask (1, C, tile_h, tile_w) peaked at the centre."""
-    var = 0.01
-    mid_h, mid_w = (tile_h - 1) / 2, (tile_w - 1) / 2
-    y = torch.arange(tile_h, dtype=torch.float32)
-    x = torch.arange(tile_w, dtype=torch.float32)
-    wy = torch.exp(-((y - mid_h) / tile_h) ** 2 / (2 * var))
-    wx = torch.exp(-((x - mid_w) / tile_w) ** 2 / (2 * var))
-    w = wy[:, None] * wx[None, :]                       # (tile_h, tile_w)
-    return w.to(device).unsqueeze(0).unsqueeze(0).expand(1, channels, -1, -1)
-
-
-def _make_tile_grid(length, tile, overlap):
-    """Return sorted, deduplicated starting positions that cover *length*."""
-    stride = max(tile - overlap, 1)
-    if length <= tile:
-        return [0]
-    positions = list(range(0, length - tile + 1, stride))
-    if positions[-1] + tile < length:
-        positions.append(length - tile)
-    return sorted(set(positions))
-
-
 def _crop_venc_features(z_fea_full, hi, wi, he, we, lh, lw):
     """Crop DINOv2 feature list from latent-space coordinates."""
     tiles = []
@@ -249,7 +214,7 @@ def tiled_latent_inference(
 
     # --- Full-image encode (done once) ---
     with torch.no_grad():
-        lq_latent, latents_mean, latents_std = _encode_latent(vae, lq_tensor, args, device)
+        lq_latent, latents_mean, latents_std = encode_dispatch(vae, lq_tensor, args, device)
 
     _, lc, lh, lw = lq_latent.shape
 
@@ -272,7 +237,7 @@ def tiled_latent_inference(
                 u = model(torch.cat([lq_latent, z], 1),
                           t_cur.expand(b), t_nxt.expand(b), z_fea)
                 z = z - (t_cur - t_nxt) * u
-            return _decode_latent(vae, z, args, latents_mean, latents_std, light_decoder)
+            return decode_dispatch(vae, z, args, latents_mean, latents_std, light_decoder)
 
     # --- Build tile grid & Gaussian weights ---
     h_pos = _make_tile_grid(lh, lt_size, lt_overlap)
@@ -328,7 +293,7 @@ def tiled_latent_inference(
 
     # --- Full-latent decode (done once) ---
     with torch.no_grad():
-        return _decode_latent(vae, z, args, latents_mean, latents_std, light_decoder)
+        return decode_dispatch(vae, z, args, latents_mean, latents_std, light_decoder)
 
 
 def main():
@@ -341,6 +306,15 @@ def main():
     parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='adain')
     parser.add_argument("--tile_size", type=int, default=0, help='Tile size for diffusion inference (0 to disable)')
     parser.add_argument("--tile_overlap", type=int, default=32)
+    parser.add_argument('--vae_tile_size', type=int, default=None,
+                        help='VAE tile size in pixels for tiled encode/decode (default 0 = full-image VAE; '
+                             'the 4D-attention fix makes full VAE fit up to ~8K, so tiling is only for '
+                             'extreme sizes).')
+    parser.add_argument('--vae_tile_overlap', type=int, default=None,
+                        help='VAE tile overlap in pixels (default: follow --tile_overlap).')
+    parser.add_argument('--posterior_mode', action=argparse.BooleanOptionalAction, default=True,
+                        help='Deterministic VAE latent (latent_dist.mode()) instead of .sample() '
+                             '(needed for seam-free tiled encode).')
     parser.add_argument('--infer_steps', type=int, default=1)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--force_rerun', action='store_true')
@@ -351,6 +325,18 @@ def main():
 
     if args.infer_steps is None:
         args.infer_steps = 1
+    # vae_tile_size stays None (-> full-image VAE) by default; only explicit
+    # --vae_tile_size N enables tiled VAE for extreme (>~8K) inputs.
+
+    # Timestep-embedding structure: whether the student has the auxiliary r_embedder
+    # (2nd timestep embedding). Read from the ckpt's args.json — one-step models carry
+    # auxiliary_time_cond=False (single t_embedder), distilled students True. Old
+    # distilled ckpts lack the key -> default True (backward compatible). With
+    # infer_steps=1 the flow-matching recipe is identical for both structures, so the
+    # sampling path below needs no branch.
+    if getattr(args, 'auxiliary_time_cond', None) is None:
+        args.auxiliary_time_cond = True
+    args.auxiliary_time_cond = bool(args.auxiliary_time_cond)
 
     seed = args.seed
     image_paths = list_lq_images(args.input_image)
@@ -358,7 +344,8 @@ def main():
         print("No LQ images found. Exit.")
         return
 
-    run_stem = f'{args.ae_type}_steps{args.infer_steps}_seed{seed}_{args.distill_type}'
+    distill_tag = getattr(args, 'distill_type', None) or 'onestep'
+    run_stem = f'{args.ae_type}_steps{args.infer_steps}_seed{seed}_{distill_tag}'
     out_dir = f'{args.output_dir}/{run_stem}'
 
     if (
@@ -419,7 +406,7 @@ def main():
         mlp_ratio=args.mlp_ratio,
         z_dims=args.enc_dim,
         encdim_ratio=args.encdim_ratio,
-        auxiliary_time_cond=True,
+        auxiliary_time_cond=args.auxiliary_time_cond,
         use_qknorm=args.use_qknorm,
         use_swiglu=args.use_swiglu,
         use_rope=args.use_rope,
@@ -493,10 +480,10 @@ def main():
                 )
             else:
                 with torch.no_grad():
-                    lq_latent, latents_mean, latents_std = _encode_latent(vae, lq, args, device)
+                    lq_latent, latents_mean, latents_std = encode_dispatch(vae, lq, args, device)
                     z_fea = get_venc_features(venc, lq, args)
                     sr_latent = sample_fn(model, lq_latent, n_steps=args.infer_steps, venc_fea=z_fea)
-                    sr_tensor = _decode_latent(vae, sr_latent, args, latents_mean, latents_std, light_decoder)
+                    sr_tensor = decode_dispatch(vae, sr_latent, args, latents_mean, latents_std, light_decoder)
 
             sr_img = transforms.ToPILImage()(sr_tensor[0].cpu() * 0.5 + 0.5)
             if args.align_method == 'adain':
