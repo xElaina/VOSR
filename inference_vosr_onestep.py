@@ -57,7 +57,7 @@ def all_expected_outputs_exist(image_paths, out_dirs):
     for img_path in image_paths:
         name = os.path.basename(img_path)
         for d in out_dirs:
-            if not os.path.isfile(os.path.join(d, name)):
+            if not os.path.isfile(os.path.join(d, os.path.splitext(name)[0] + '.png')):
                 return False
     return True
 
@@ -490,7 +490,7 @@ def main():
                 sr_img = adain_color_fix(sr_img, input_img)
             elif args.align_method == 'wavelet':
                 sr_img = wavelet_color_fix(sr_img, input_img)
-            sr_img.save(os.path.join(out_dir, img_name))
+            sr_img.save(os.path.join(out_dir, os.path.splitext(img_name)[0] + '.png'))
 
         except Exception as e:
             print(f"Error processing {img_name}: {e}")
