@@ -344,9 +344,8 @@ def main():
         print("No LQ images found. Exit.")
         return
 
-    distill_tag = getattr(args, 'distill_type', None) or 'onestep'
-    run_stem = f'{args.ae_type}_steps{args.infer_steps}_seed{seed}_{distill_tag}'
-    out_dir = f'{args.output_dir}/{run_stem}'
+    # Output goes directly into the user-specified -o folder (no tag sub-dir).
+    out_dir = args.output_dir
 
     if (
         not getattr(args, 'force_rerun', False)
