@@ -303,7 +303,7 @@ def main():
     parser.add_argument('--output_dir', '-o', type=str, required=True)
     parser.add_argument("--upscale", '-u', type=int, default=1)
     parser.add_argument("--process_size", type=int, default=512)
-    parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='adain')
+    parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='wavelet')
     parser.add_argument("--tile_size", type=int, default=0, help='Tile size for diffusion inference (0 to disable)')
     parser.add_argument("--tile_overlap", type=int, default=32)
     parser.add_argument('--vae_tile_size', type=int, default=None,
