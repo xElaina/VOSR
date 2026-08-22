@@ -52,6 +52,8 @@
 <a id="news"></a>
 ## &#x1F4F0; News
 
+- 2026.08.22 **VOSR 2.0** released: a one-step 1.4B DiT, vision-only model with improved fine-structure restoration. Visualization results and feature overview: [cswry.github.io/vosr2](https://cswry.github.io/vosr2/).
+
 - 2026.04.10 Public release: training and inference code, [pretrained checkpoints](https://modelscope.cn/models/LULALULALU/VOSR_CKPT), bundled VAE / decoder assets, and the [ScreenSR](https://modelscope.cn/datasets/LULALULALU/ScreenSR) benchmark. Setup and file layout: [Preparation](#preparation); commands: [Training](#training) and [Inference](#inference).
 
 ---
@@ -92,6 +94,7 @@ preset/ckpts/
 |-- stable-diffusion-2-1-base/  # SD2.1 VAE (for 0.5B models)
 |-- sd21_lwdecoder.pth          # Lightweight decoder for SD2.1 VAE
 |-- torch_cache/                # DINOv2 pretrained weights
+|-- VOSR2/                     # VOSR 2.0 one-step (1.4B) model
 |-- VOSR_0.5B_ms/               # 0.5B multi-step model
 |-- VOSR_0.5B_os/               # 0.5B one-step (distilled) model
 |-- VOSR_1.4B_ms/               # 1.4B multi-step model
@@ -172,6 +175,19 @@ torchrun --nproc_per_node=8 train_vosr_distill.py --config configs/train_yml/one
 
 Single-GPU inference. 
 
+### VOSR 2.0 one-step (default)
+
+VOSR 2.0 is the default one-step model (1.4B DiT, vision-only, with improved fine-structure restoration).
+
+```bash
+# VOSR2-1.4B one-step
+python inference_vosr_onestep.py \
+    -c preset/ckpts/VOSR2 \
+    -i preset/datasets/inp_data \
+    -o preset/results \
+    -u 4
+```
+
 ### Multi-step models
 
 Multi-step sampling defaults to **25 steps** (`--infer_steps`, default 25). Override if you need fewer or more function evaluations.
@@ -221,7 +237,30 @@ python inference_vosr_onestep.py \
     -u 4
 ```
 
-Key arguments: `-c` checkpoint path, `-i` input image or folder, `-o` output directory, `-u` upscale factor. Multi-step (`inference_vosr.py`): `--infer_steps` (default `25`), `--cfg_scale`, `--weak_cond_strength_aelq` (see above). One-step (`inference_vosr_onestep.py`): `--infer_steps` (default `1`). Use `--tile_size 512` for large images.
+### Common arguments
+
+`-c` checkpoint path, `-i` input image or folder, `-o` output directory, `-u` upscale factor. Outputs are saved as **PNG directly into the `-o` folder**; color alignment defaults to `wavelet` (`--align_method wavelet|adain|nofix`).
+
+- Multi-step (`inference_vosr.py`): `--infer_steps` (default `25`), `--cfg_scale`, `--weak_cond_strength_aelq` (see above).
+- One-step (`inference_vosr_onestep.py`): `--infer_steps` (default `1`).
+- Both: `--posterior_mode` / `--no-posterior_mode` — deterministic VAE latent (`latent_dist.mode()`) is the default, for reproducible results and seam-free tiled inference.
+
+### Tiled inference for large images
+
+Large images are tiled in latent space to bound GPU memory:
+
+- `--tile_size 512` — DiT tile size in pixels (default `0` = disabled). Use for large images; overlapping tiles are Gaussian-blended.
+- `--vae_tile_size 1024` — VAE encoder/decoder tile size in pixels (default `0` = full-image VAE). The Qwen VAE attention is O(N)-memory, so full-image encode/decode already fits up to ~8K inputs; VAE tiling is only needed for extreme sizes.
+- `--vae_tile_overlap` — VAE tile overlap (default: follows `--tile_overlap`).
+
+```bash
+# VOSR-1.4B one-step on a large image with DiT + VAE tiling
+python inference_vosr_onestep.py \
+    -c preset/ckpts/VOSR_1.4B_os \
+    -i large_input.png \
+    -o preset/results \
+    -u 4 --tile_size 512 --vae_tile_size 1024
+```
 
 ---
 
