@@ -52,7 +52,7 @@
 <a id="news"></a>
 ## &#x1F4F0; News
 
-- 2026.08.22 **VOSR 2.0** released: a one-step 1.4B DiT, vision-only model with improved fine-structure restoration. Visualization results and feature overview: [cswry.github.io/vosr2](https://cswry.github.io/vosr2/).
+- 2026.08.22 **VOSR 2.0** released: a one-step 1.4B DiT, vision-only model with improved fine-structure restoration. See [visual comparison](https://cswry.github.io/vosr2/).
 
 - 2026.04.10 Public release: training and inference code, [pretrained checkpoints](https://modelscope.cn/models/LULALULALU/VOSR_CKPT), bundled VAE / decoder assets, and the [ScreenSR](https://modelscope.cn/datasets/LULALULALU/ScreenSR) benchmark. Setup and file layout: [Preparation](#preparation); commands: [Training](#training) and [Inference](#inference).
 
